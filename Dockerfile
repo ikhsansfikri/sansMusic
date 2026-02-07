@@ -1,26 +1,20 @@
-# GANTI: Gunakan Alpine Linux (Jauh lebih kecil & cepat)
 FROM node:20-alpine
 
-# Set folder kerja
 WORKDIR /usr/src/app
 
-# INSTALASI PAKET SISTEM (OPTIMALISASI)
-# 1. python3: Wajib untuk yt-dlp
-# 2. ffmpeg: Wajib untuk pemrosesan audio (apk add ffmpeg di alpine sangat cepat)
-# 3. build-base & python3-dev: Diperlukan HANYA saat 'npm install' untuk compile library sodium/opus
-#    (Kita gunakan trik --virtual agar bisa dihapus setelah npm install selesai untuk menghemat size)
-RUN apk add --no-cache python3 ffmpeg \
-    && apk add --no-cache --virtual .build-deps build-base python3-dev
+# 1. Install FFmpeg (Fix error: FFmpeg not found)
+# 2. Install Python3 & PIP (Agar bisa install yt-dlp terbaru)
+RUN apk add --no-cache ffmpeg python3 py3-pip
 
-# Copy package.json dulu (Memanfaatkan Docker Layer Caching)
-COPY package*.json ./
+# 3. Install yt-dlp lewat PIP (Fix error: 403 Forbidden)
+# Kita gunakan flag --break-system-packages karena di Alpine terbaru aturan pip diperketat
+RUN pip3 install yt-dlp --break-system-packages
+
+# Copy package
+COPY package.json ./
 
 # Install dependency Node.js
-# Jika ada error 'gyp', build-deps di atas akan menanganinya
-RUN npm install
-
-# HAPUS build-deps agar image tetap kecil (Cleanup)
-RUN apk del .build-deps
+RUN npm install --omit=dev
 
 # Copy sisa kode
 COPY . .

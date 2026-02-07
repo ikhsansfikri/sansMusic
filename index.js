@@ -7,15 +7,14 @@ const {
     AudioPlayerStatus,
     getVoiceConnection
 } = require('@discordjs/voice');
-const youtubedl = require('youtube-dl-exec');
 const winston = require('winston');
 const { spawn } = require('child_process');
-const path = require('path');
-const fs = require('fs');
+
 
 // --- CONFIGURATION ---
 const TOKEN = process.env.DISCORD_TOKEN;
-const PREFIX = '!';
+const PREFIX = '.';
+const YT_DLP_COMMAND = 'yt-dlp'; // Pastikan yt-dlp sudah terinstall global
 
 // --- SETUP LOGGER ---
 const logFormat = winston.format.printf(({ level, message, timestamp }) => {
@@ -39,14 +38,6 @@ if (!TOKEN) {
     process.exit(1);
 }
 
-// --- LOCATE YT-DLP BINARY ---
-const ytDlpPath = path.join(__dirname, 'node_modules', 'youtube-dl-exec', 'bin', 'yt-dlp');
-
-if (!fs.existsSync(ytDlpPath)) {
-    logger.error(`❌ Critical Error: Binary yt-dlp tidak ditemukan di: ${ytDlpPath}`);
-    process.exit(1);
-}
-
 // --- CLIENT SETUP ---
 const client = new Client({
     intents: [
@@ -60,79 +51,110 @@ const client = new Client({
 // --- QUEUE STRUCTURE ---
 const queue = new Map();
 
-// --- HELPER: GET SONG INFO ---
-async function getSongInfo(query) {
-    try {
-        const output = await youtubedl(query, {
-            dumpSingleJson: true,
-            noWarnings: true,
-            noCallHome: true,
-            noCheckCertificate: true,
-            preferFreeFormats: true,
-            youtubeSkipDashManifest: true,
-            defaultSearch: 'ytsearch'
-        });
+// --- HELPER: GET SONG INFO (Raw Spawn) ---
+function getSongInfo(query) {
+    return new Promise((resolve, reject) => {
+        const process = spawn(YT_DLP_COMMAND, [
+            '--dump-json',
+            '--default-search', 'ytsearch',
+            '--no-playlist',
+            '--no-warnings',
+            '--geo-bypass',
+            query
+        ]);
 
-        if (output.entries) {
-            return output.entries[0];
-        }
-        return output;
-    } catch (error) {
-        logger.error(`Error fetching song info: ${error.message}`);
-        return null;
-    }
+        let data = '';
+        process.stdout.on('data', (chunk) => data += chunk);
+
+        process.on('close', (code) => {
+            if (code === 0 && data) {
+                try {
+                    const info = JSON.parse(data);
+                    const result = info.entries ? info.entries[0] : info;
+
+                    resolve({
+                        title: result.title,
+                        url: result.webpage_url,
+                        webpage_url: result.webpage_url,
+                        duration_string: result.duration_string,
+                        id: result.id,
+                        thumbnail: result.thumbnail
+                    });
+                } catch (e) {
+                    logger.error(`Error parsing info JSON: ${e.message}`);
+                    resolve(null);
+                }
+            } else {
+                resolve(null);
+            }
+        });
+    });
 }
 
-// --- HELPER: AUTOPLAY RECOMMENDATION ---
-async function getRelatedSong(previousSongUrl) {
-    try {
-        const videoId = previousSongUrl.split('v=')[1];
-        if (!videoId) return null;
-
+// --- HELPER: AUTOPLAY RECOMMENDATION (Mix Playlist) ---
+function getRelatedSong(videoId) {
+    return new Promise((resolve) => {
         const mixUrl = `https://www.youtube.com/watch?v=${videoId}&list=RD${videoId}`;
 
-        const output = await youtubedl(mixUrl, {
-            dumpSingleJson: true,
-            noWarnings: true,
-            playlistEnd: 2,
-            flatPlaylist: true
-        });
+        const process = spawn(YT_DLP_COMMAND, [
+            '--dump-json',
+            '--flat-playlist',
+            '--playlist-end', '2',
+            '--no-warnings',
+            mixUrl
+        ]);
 
-        if (output.entries && output.entries.length >= 2) {
-            const rec = output.entries[1];
-            return await getSongInfo(`https://www.youtube.com/watch?v=${rec.id}`);
-        }
-        return null;
-    } catch (error) {
-        logger.error(`Autoplay Error: ${error.message}`);
-        return null;
-    }
+        let data = '';
+        process.stdout.on('data', (chunk) => data += chunk);
+
+        process.on('close', (code) => {
+            if (code === 0 && data) {
+                try {
+                    const lines = data.trim().split('\n');
+                    if (lines.length >= 2) {
+                        const rec = JSON.parse(lines[1]);
+                        resolve({
+                            title: rec.title,
+                            url: rec.url || `https://www.youtube.com/watch?v=${rec.id}`,
+                            webpage_url: rec.url || `https://www.youtube.com/watch?v=${rec.id}`,
+                            duration_string: rec.duration_string || 'Unknown',
+                            id: rec.id
+                        });
+                    } else {
+                        resolve(null);
+                    }
+                } catch (e) {
+                    resolve(null);
+                }
+            } else {
+                resolve(null);
+            }
+        });
+    });
 }
 
 // --- HELPER: PLAY SONG (STREAMING) ---
 async function playSong(guildId, song) {
     const serverQueue = queue.get(guildId);
 
-    // Kill proses lama
+    // Kill proses lama (Cleanup)
     if (serverQueue.streamProcess) {
-        serverQueue.streamProcess.removeAllListeners('error');
-        serverQueue.streamProcess.kill('SIGKILL');
+        try {
+            serverQueue.streamProcess.removeAllListeners('error');
+            serverQueue.streamProcess.kill('SIGKILL');
+        } catch (e) { }
         serverQueue.streamProcess = null;
     }
 
-    // --- LOGIC AUTOPLAY ---
+    // --- LOGIC AUTOPLAY / EMPTY QUEUE ---
     if (!song) {
         if (serverQueue.lastPlayed) {
-            logger.info(`Autoplay triggered in guild ${guildId}.`);
-            serverQueue.textChannel.send('🔄 Finding next song...');
-            const recommendation = await getRelatedSong(serverQueue.lastPlayed.webpage_url);
+            serverQueue.textChannel.send('🔄 Queue ended. Fetching recommendation...');
+            const recommendation = await getRelatedSong(serverQueue.lastPlayed.id);
 
             if (recommendation) {
                 const newSong = {
-                    title: recommendation.title,
-                    url: recommendation.url,
-                    webpage_url: recommendation.webpage_url,
-                    duration: recommendation.duration_string,
+                    ...recommendation,
                     isAutoplay: true
                 };
                 serverQueue.songs.push(newSong);
@@ -160,24 +182,43 @@ async function playSong(guildId, song) {
     }
 
     try {
-        const child = spawn(ytDlpPath, [
+        // Spawn yt-dlp untuk streaming
+        const child = spawn(YT_DLP_COMMAND, [
             song.webpage_url,
             '-o', '-',
             '-f', 'bestaudio',
             '-q',
             '--limit-rate', '100K',
-            '--no-playlist'
-        ]);
+            '--no-playlist',
+            '--no-warnings',
+            '--buffer-size', '16K'
+        ], {
+            // PERBAIKAN DI SINI:
+            // ignore: stdin (karena kita tidak kirim input apa2)
+            // pipe: stdout (output suara)
+            // ignore: stderr (agar log tidak kotor, atau ganti 'inherit' untuk debug)
+            stdio: ['ignore', 'pipe', 'ignore']
+        });
 
         serverQueue.streamProcess = child;
 
-        child.on('error', (error) => {
-            logger.warn(`Child Process Error (Ignored): ${error.message}`);
-        });
+        // --- PERBAIKAN UTAMA ---
+        // Hapus child.stdin.on('error') karena stdin dimatikan ('ignore')
 
-        // Mencegah error "Broken Pipe"
-        child.stdin.on('error', () => { });
-        child.stdout.on('error', () => { });
+        // Cukup handle stdout error jika ada
+        if (child.stdout) {
+            child.stdout.on('error', () => { });
+        }
+
+        // Handle process error umum (misal: command not found)
+        child.on('error', (error) => {
+            logger.warn(`Child Process Error: ${error.message}`);
+            // Jika error fatal, skip lagu
+            if (!serverQueue.player.state.status === AudioPlayerStatus.Playing) {
+                serverQueue.songs.shift();
+                playSong(guildId, serverQueue.songs[0]);
+            }
+        });
 
         const resource = createAudioResource(child.stdout);
         serverQueue.player.play(resource);
@@ -202,43 +243,34 @@ async function playSong(guildId, song) {
 client.once(Events.ClientReady, () => {
     logger.info(`✅ Bot is online as ${client.user.tag}`);
     client.user.setPresence({
-        activities: [{ name: '!help | !play', type: ActivityType.Listening }],
+        activities: [{ name: '.help | .play', type: ActivityType.Listening }],
         status: 'online',
     });
 });
 
 // --- EVENT: VOICE STATE UPDATE (Leave on Empty) ---
 client.on(Events.VoiceStateUpdate, (oldState, newState) => {
-    // 1. Cek apakah bot sedang terhubung di guild ini
     const guildId = oldState.guild.id;
     const connection = getVoiceConnection(guildId);
     if (!connection) return;
 
-    // 2. Ambil channel tempat bot berada saat ini
     const botChannel = oldState.guild.members.me.voice.channel;
-
-    // Jika bot entah kenapa tidak terdeteksi di channel, abaikan
     if (!botChannel) return;
 
-    // 3. Cek jumlah member di channel tersebut
-    // Jika members.size == 1, berarti hanya bot sendirian (semua manusia sudah keluar)
     if (botChannel.members.size === 1) {
         const serverQueue = queue.get(guildId);
-
         if (serverQueue) {
-            // Kill proses download jika ada
             if (serverQueue.streamProcess) {
-                serverQueue.streamProcess.removeAllListeners('error');
-                serverQueue.streamProcess.kill('SIGKILL');
+                try {
+                    serverQueue.streamProcess.removeAllListeners('error');
+                    serverQueue.streamProcess.kill('SIGKILL');
+                } catch (e) { }
             }
-            // Bersihkan antrean dan stop player
             serverQueue.songs = [];
             serverQueue.player.stop();
-            serverQueue.textChannel.send('👋 Everyone left the channel. Disconnecting...');
+            serverQueue.textChannel.send('👋 Everyone left the channel.');
             queue.delete(guildId);
         }
-
-        // Putus koneksi
         connection.destroy();
         logger.info(`Left guild ${guildId} because voice channel is empty.`);
     }
@@ -273,7 +305,8 @@ client.on(Events.MessageCreate, async message => {
             title: songInfo.title,
             url: songInfo.url,
             webpage_url: songInfo.webpage_url,
-            duration: songInfo.duration_string
+            duration: songInfo.duration_string,
+            id: songInfo.id
         };
 
         let serverQueue = queue.get(guildId);
@@ -305,8 +338,10 @@ client.on(Events.MessageCreate, async message => {
 
                 player.on(AudioPlayerStatus.Idle, () => {
                     if (serverQueue.streamProcess) {
-                        serverQueue.streamProcess.removeAllListeners('error');
-                        serverQueue.streamProcess.kill('SIGKILL');
+                        try {
+                            serverQueue.streamProcess.removeAllListeners('error');
+                            serverQueue.streamProcess.kill('SIGKILL');
+                        } catch (e) { }
                     }
                     serverQueue.songs.shift();
                     playSong(guildId, serverQueue.songs[0]);
@@ -350,8 +385,10 @@ client.on(Events.MessageCreate, async message => {
         logger.info(`Song skipped by ${userTag}`);
 
         if (serverQueue.streamProcess) {
-            serverQueue.streamProcess.removeAllListeners('error');
-            serverQueue.streamProcess.kill('SIGKILL');
+            try {
+                serverQueue.streamProcess.removeAllListeners('error');
+                serverQueue.streamProcess.kill('SIGKILL');
+            } catch (e) { }
         }
 
         serverQueue.player.stop();
@@ -362,13 +399,15 @@ client.on(Events.MessageCreate, async message => {
         const serverQueue = queue.get(guildId);
         if (serverQueue) {
             if (serverQueue.streamProcess) {
-                serverQueue.streamProcess.removeAllListeners('error');
-                serverQueue.streamProcess.kill('SIGKILL');
+                try {
+                    serverQueue.streamProcess.removeAllListeners('error');
+                    serverQueue.streamProcess.kill('SIGKILL');
+                } catch (e) { }
             }
             serverQueue.songs = [];
             serverQueue.lastPlayed = null;
             serverQueue.player.stop();
-            message.reply('Stopped.');
+            message.reply('🛑 Stopped.');
         }
     }
 
@@ -379,8 +418,10 @@ client.on(Events.MessageCreate, async message => {
 
         if (serverQueue) {
             if (serverQueue.streamProcess) {
-                serverQueue.streamProcess.removeAllListeners('error');
-                serverQueue.streamProcess.kill('SIGKILL');
+                try {
+                    serverQueue.streamProcess.removeAllListeners('error');
+                    serverQueue.streamProcess.kill('SIGKILL');
+                } catch (e) { }
             }
             queue.delete(guildId);
         }
@@ -418,7 +459,6 @@ client.on(Events.MessageCreate, async message => {
         const helpEmbed = new EmbedBuilder()
             .setColor('#0099ff')
             .setTitle('🎶 Bot Commands')
-            // .setDescription('San\'sMusic')
             .addFields(
                 { name: '!play <title/link>', value: 'Plays a song.' },
                 { name: '!skip', value: 'Skips current song.' },
