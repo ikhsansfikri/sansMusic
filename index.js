@@ -10,7 +10,7 @@ const { spawn } = require('child_process');
 
 // ===== CONFIG =====
 const TOKEN = process.env.DISCORD_TOKEN;
-const PREFIX = '.';
+const PREFIX = "-";
 const YT_DLP_COMMAND = 'yt-dlp';
 
 // ===== CLIENT =====
@@ -187,7 +187,7 @@ async function playSong(guildId, song) {
 client.once(Events.ClientReady, () => {
     console.log(`✅ Logged in as ${client.user.tag}`);
     client.user.setPresence({
-        activities: [{ name: '.play | .help', type: ActivityType.Listening }],
+        activities: [{ name: "'play | 'help", type: ActivityType.Listening }],
         status: 'online'
     });
 });
@@ -202,7 +202,7 @@ client.on(Events.MessageCreate, async message => {
 
     let serverQueue = queue.get(guildId);
 
-    if (cmd === 'play') {
+    if (cmd === 'play' || cmd === 'p') {
         if (!args.length) return message.reply('❌ Please provide a song name.');
         if (!message.member.voice.channel) return message.reply('❌ You must join a voice channel first.');
 
@@ -248,7 +248,7 @@ client.on(Events.MessageCreate, async message => {
         }
     }
 
-    if (cmd === 'skip') {
+    if (cmd === 'skip' || cmd === 's') {
         if (serverQueue) {
             serverQueue.player.stop();
             message.reply('⏭ Skipped the current song.');
@@ -270,14 +270,55 @@ client.on(Events.MessageCreate, async message => {
         }
     }
 
-    if (cmd === 'resume') {
+    if (cmd === 'resume' || cmd === 'r') {
         if (serverQueue && serverQueue.player.state.status === 'paused') {
             serverQueue.player.unpause();
             message.reply('▶ Music resumed.');
         }
     }
 
-    if (cmd === 'help') {
+    if (cmd === 'queue' || cmd === 'list' || cmd === 'l') {
+        const serverQueue = queue.get(guildId);
+
+        if (!serverQueue || serverQueue.songs.length === 0) {
+            return message.reply('📭 The queue is currently empty.');
+        }
+
+        const nowPlaying = serverQueue.songs[0];
+        const upcoming = serverQueue.songs.slice(1);
+
+        const description = upcoming.length
+            ? upcoming
+                .slice(0, 10) // tampilkan max 10 lagu
+                .map((s, i) =>
+                    `**${i + 1}.** ${s.title} \`${s.duration}\`${s.isAutoplay ? ' *(Autoplay)*' : ''}`
+                )
+                .join('\n')
+            : 'No upcoming songs.';
+
+        const embed = new EmbedBuilder()
+            .setColor(0x1db954)
+            .setTitle('🎶 Music Queue')
+            .addFields(
+                {
+                    name: '▶ Now Playing',
+                    value: `**${nowPlaying.title}**\n⏱ ${nowPlaying.duration}\n👤 ${nowPlaying.isAutoplay ? 'Autoplay' : nowPlaying.requester.username}`
+                },
+                {
+                    name: '📜 Up Next',
+                    value: description
+                }
+            )
+            .setFooter({
+                text: `Total songs in queue: ${serverQueue.songs.length}`,
+                iconURL: client.user.displayAvatarURL()
+            })
+            .setTimestamp();
+
+        message.channel.send({ embeds: [embed] });
+    }
+
+    if (cmd === 'help' || cmd === 'h') {
         message.channel.send({
             embeds: [
                 new EmbedBuilder()
@@ -285,12 +326,13 @@ client.on(Events.MessageCreate, async message => {
                     .setTitle('🎵 Music Bot Commands')
                     .setDescription('Here are the commands you can use:')
                     .addFields(
-                        { name: '.play <song name>', value: 'Play a song or add to the queue', inline: false },
-                        { name: '.skip', value: 'Skip the current song', inline: false },
-                        { name: '.stop', value: 'Stop the music and clear the queue', inline: false },
-                        { name: '.pause', value: 'Pause the current song', inline: false },
-                        { name: '.resume', value: 'Resume the paused song', inline: false },
-                        { name: '.help', value: 'Show this help message', inline: false }
+                        { name: "-play <song name or link> | -p", value: 'Play a song or add to the queue', inline: false },
+                        { name: "-skip | -s", value: 'Skip the current song', inline: false },
+                        { name: "-stop", value: 'Stop the music and clear the queue', inline: false },
+                        { name: "-pause", value: 'Pause the current song', inline: false },
+                        { name: "-resume | -r", value: 'Resume the paused song', inline: false },
+                        { name: "-queue | -list | -l", value: 'Show the current music queue', inline: false },
+                        { name: "-help | -h", value: 'Show this help message', inline: false }
                     )
                     .setFooter({
                         text: 'Powered by San\'sMusic', iconURL: client.user.displayAvatarURL()
@@ -299,6 +341,43 @@ client.on(Events.MessageCreate, async message => {
             ]
         });
     }
+});
+
+// Auto leave
+client.on(Events.VoiceStateUpdate, (oldState, newState) => {
+    // cek semua server queue
+    queue.forEach(async (serverQueue, guildId) => {
+        // jika bot sedang tidak terkoneksi, skip
+        if (!serverQueue.connection) return;
+
+        const botChannel = serverQueue.voiceChannel;
+        if (!botChannel) return;
+
+        // ambil member yang masih ada di voice channel selain bot
+        const nonBotMembers = botChannel.members.filter(m => !m.user.bot);
+
+        if (nonBotMembers.size === 0) {
+            console.log(`[AUTO LEAVE] No users left in voice channel. Leaving...`);
+
+            // kirim pesan ke text channel
+            serverQueue.textChannel.send('👋 No users left in the voice channel. Leaving now.');
+
+            // stop player
+            serverQueue.player.stop();
+
+            // bersihkan queue
+            serverQueue.songs = [];
+            serverQueue.history.clear();
+
+            // disconnect
+            try {
+                serverQueue.connection.destroy();
+            } catch { }
+
+            // hapus dari map
+            queue.delete(guildId);
+        }
+    });
 });
 
 // ===== LOGIN =====
