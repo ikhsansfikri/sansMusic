@@ -368,7 +368,7 @@ client.on(Events.MessageCreate, async message => {
             serverQueue.songs = [];
             serverQueue.lastPlayed = null;
             serverQueue.player.stop();
-            message.reply('🛑 Stopped.');
+            message.reply('Stopped.');
         }
     }
 
