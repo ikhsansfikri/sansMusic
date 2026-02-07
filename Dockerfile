@@ -20,4 +20,4 @@ RUN npm install --omit=dev
 COPY . .
 
 # Jalankan bot
-CMD ["node", "index.js"]
+CMD ["node", "src/index.js"]
