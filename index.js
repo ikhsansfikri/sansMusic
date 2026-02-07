@@ -23,6 +23,24 @@ const client = new Client({
     ]
 });
 
+function formatTime(sec) {
+    if (!sec || isNaN(sec)) return 'Live';
+    const m = Math.floor(sec / 60);
+    const s = Math.floor(sec % 60);
+    return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+function createProgressBar(current, total, size = 20) {
+    if (!total || isNaN(total)) return '🔴 LIVE';
+
+    const percent = Math.min(current / total, 1);
+    const filled = Math.round(size * percent);
+    const empty = size - filled;
+
+    return `▶ ${'█'.repeat(filled)}${'─'.repeat(empty)} ${Math.round(percent * 100)}%`;
+}
+
+
 // ===== QUEUE =====
 const queue = new Map();
 
@@ -59,7 +77,8 @@ function ytSearch(query, mode) {
                     url: r.webpage_url,
                     webpage_url: r.webpage_url,
                     duration: r.duration_string || 'Live',
-                    thumbnail: r.thumbnail
+                    thumbnail: r.thumbnail,
+                    duration_seconds: r.duration || null,
                 });
             } catch (err) {
                 console.log(`[SEARCH] Failed to parse: ${query}`);
@@ -130,6 +149,7 @@ async function playSong(guildId, song) {
             });
         }
 
+
         return playSong(guildId, serverQueue.songs[0]);
     }
 
@@ -160,8 +180,10 @@ async function playSong(guildId, song) {
     const embed = new EmbedBuilder()
         .setColor(song.isAutoplay ? 0x9b59b6 : 0x1db954)
         .setAuthor({
-            name: song.isAutoplay ? 'YouTube Music • Autoplay' : 'YouTube Music',
-            iconURL: song.requester.displayAvatarURL?.()
+            name: song.isAutoplay
+                ? `${client.user.username} • Autoplay`
+                : client.user.username,
+            iconURL: client.user.displayAvatarURL()
         })
         .setTitle(song.title)
         .setURL(song.url)
@@ -179,7 +201,13 @@ async function playSong(guildId, song) {
             iconURL: serverQueue.textChannel.guild.iconURL()
         })
         .setTimestamp();
-
+    serverQueue.songStartTime = Date.now();
+    serverQueue.currentDurationSec = song.duration_seconds || null;
+    serverQueue.songs.url = song.url;
+    serverQueue.songs.requester = song.requester;
+    serverQueue.songs.isAutoplay = song.isAutoplay;
+    serverQueue.songs.thumbnail = song.thumbnail;
+    serverQueue.songs.duration = song.duration;
     serverQueue.textChannel.send({ embeds: [embed] });
 }
 
@@ -187,7 +215,7 @@ async function playSong(guildId, song) {
 client.once(Events.ClientReady, () => {
     console.log(`✅ Logged in as ${client.user.tag}`);
     client.user.setPresence({
-        activities: [{ name: "'play | 'help", type: ActivityType.Listening }],
+        activities: [{ name: "-help | -h", type: ActivityType.Listening }],
         status: 'online'
     });
 });
@@ -206,7 +234,7 @@ client.on(Events.MessageCreate, async message => {
         if (!args.length) return message.reply('❌ Please provide a song name.');
         if (!message.member.voice.channel) return message.reply('❌ You must join a voice channel first.');
 
-        message.reply('🔍 Searching for your song...');
+        message.reply('🔍 Searching...');
 
         const info = await getSongInfo(args.join(' '));
         if (!info) return message.reply('❌ Song not found.');
@@ -259,6 +287,7 @@ client.on(Events.MessageCreate, async message => {
         if (serverQueue) {
             serverQueue.songs = [];
             serverQueue.player.stop();
+            queue.clear();
             message.reply('⏹ Music stopped and queue cleared.');
         }
     }
@@ -279,44 +308,109 @@ client.on(Events.MessageCreate, async message => {
 
     if (cmd === 'queue' || cmd === 'list' || cmd === 'l') {
         const serverQueue = queue.get(guildId);
-
         if (!serverQueue || serverQueue.songs.length === 0) {
             return message.reply('📭 The queue is currently empty.');
         }
 
-        const nowPlaying = serverQueue.songs[0];
-        const upcoming = serverQueue.songs.slice(1);
+        const pageSize = 5;
+        let page = 0;
 
-        const description = upcoming.length
-            ? upcoming
-                .slice(0, 10) // tampilkan max 10 lagu
-                .map((s, i) =>
-                    `**${i + 1}.** ${s.title} \`${s.duration}\`${s.isAutoplay ? ' *(Autoplay)*' : ''}`
+        const totalPages = Math.ceil(serverQueue.songs.length / pageSize);
+
+        const buildEmbed = () => {
+            const now = serverQueue.songs[0];
+            const elapsed = Math.floor((Date.now() - (serverQueue.songStartTime || Date.now())) / 1000);
+
+            const progress = createProgressBar(elapsed, serverQueue.currentDurationSec);
+            const timeText = serverQueue.currentDurationSec
+                ? `${formatTime(elapsed)} / ${formatTime(serverQueue.currentDurationSec)}`
+                : 'Live';
+
+            const start = page * pageSize;
+            const songs = serverQueue.songs.slice(start, start + pageSize);
+            const url = serverQueue.songs.url;
+            const requester = serverQueue.songs.requester;
+            const isAutoplay = serverQueue.songs.isAutoplay;
+            const thumbnail = serverQueue.songs.thumbnail;
+            const duration = serverQueue.songs.duration;
+
+            const list = songs.map((s, i) => {
+                const index = start + i;
+                return index === 0
+                    ? `▶ **${s.title}**`
+                    : `**${index}.** ${s.title} \`${s.duration}\`${s.isAutoplay ? ' *(Autoplay)*' : ''}`;
+            }).join('\n');
+
+            return new EmbedBuilder()
+                .setColor(0x1db954)
+                .setAuthor({
+                    name: isAutoplay
+                        ? `${client.user.username} • Autoplay`
+                        : client.user.username,
+                    iconURL: client.user.displayAvatarURL()
+                })
+                .setTitle('🎶 Music Queue')
+                .setURL(url)
+                .setThumbnail(thumbnail || serverQueue.textChannel.guild.iconURL())
+                .addFields(
+                    {
+                        name: 'Now Playing',
+                        value: `**${now.title}**\n${progress}\n⏱ ${timeText}`
+                    },
+                    {
+                        name: `Queue (Page ${page + 1}/${totalPages})`,
+                        value: list || 'Empty'
+                    },
+                    { name: 'Duration', value: duration, inline: true },
+                    {
+                        name: 'Requested by',
+                        value: isAutoplay ? 'Autoplay' : requester.username,
+                        inline: true
+                    }
                 )
-                .join('\n')
-            : 'No upcoming songs.';
+                .setFooter({
+                    text: `Total songs: ${serverQueue.songs.length}`,
+                    iconURL: client.user.displayAvatarURL()
+                })
+                .setTimestamp();
+        };
 
-        const embed = new EmbedBuilder()
-            .setColor(0x1db954)
-            .setTitle('🎶 Music Queue')
-            .addFields(
-                {
-                    name: '▶ Now Playing',
-                    value: `**${nowPlaying.title}**\n⏱ ${nowPlaying.duration}\n👤 ${nowPlaying.isAutoplay ? 'Autoplay' : nowPlaying.requester.username}`
-                },
-                {
-                    name: '📜 Up Next',
-                    value: description
-                }
-            )
-            .setFooter({
-                text: `Total songs in queue: ${serverQueue.songs.length}`,
-                iconURL: client.user.displayAvatarURL()
-            })
-            .setTimestamp();
+        const row = new (require('discord.js').ActionRowBuilder)().addComponents(
+            new (require('discord.js').ButtonBuilder)()
+                .setCustomId('prev')
+                .setLabel('◀')
+                .setStyle(require('discord.js').ButtonStyle.Secondary),
+            new (require('discord.js').ButtonBuilder)()
+                .setCustomId('next')
+                .setLabel('▶')
+                .setStyle(require('discord.js').ButtonStyle.Secondary)
+        );
 
-        message.channel.send({ embeds: [embed] });
+        const msg = await message.channel.send({
+            embeds: [buildEmbed()],
+            components: totalPages > 1 ? [row] : []
+        });
+
+        const collector = msg.createMessageComponentCollector({
+            time: 60_000
+        });
+
+        collector.on('collect', i => {
+            if (i.user.id !== message.author.id) {
+                return i.reply({ content: '❌ This queue is not for you.', ephemeral: true });
+            }
+
+            if (i.customId === 'prev') page = Math.max(page - 1, 0);
+            if (i.customId === 'next') page = Math.min(page + 1, totalPages - 1);
+
+            i.update({ embeds: [buildEmbed()] });
+        });
+
+        collector.on('end', () => {
+            msg.edit({ components: [] }).catch(() => { });
+        });
     }
+
 
     if (cmd === 'help' || cmd === 'h') {
         message.channel.send({
