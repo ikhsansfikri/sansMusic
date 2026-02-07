@@ -26,23 +26,12 @@ const client = new Client({
 // ===== QUEUE =====
 const queue = new Map();
 
-// ===== LOG UTILITY =====
-function log(message) {
-    console.log(`[${new Date().toISOString()}] ${message}`);
-}
-
 // ===== SEARCH (YTM → YT FALLBACK) =====
 async function getSongInfo(query) {
-    log(`Searching song: "${query}"`);
+    console.log(`[SEARCH] Searching for: ${query}`);
     let result = await ytSearch(query, 'ytsearchmusic');
-    if (result) {
-        log(`Found on YouTube Music: "${result.title}"`);
-        return result;
-    }
-    result = await ytSearch(query, 'ytsearch');
-    if (result) log(`Found on YouTube: "${result.title}"`);
-    else log(`Song not found: "${query}"`);
-    return result;
+    if (result) return result;
+    return await ytSearch(query, 'ytsearch');
 }
 
 function ytSearch(query, mode) {
@@ -62,6 +51,8 @@ function ytSearch(query, mode) {
             try {
                 const info = JSON.parse(data);
                 const r = info.entries ? info.entries[0] : info;
+                console.log(`[SEARCH] Found: ${r.title}`);
+
                 resolve({
                     title: r.title,
                     id: r.id,
@@ -71,7 +62,7 @@ function ytSearch(query, mode) {
                     thumbnail: r.thumbnail
                 });
             } catch (err) {
-                log(`Error parsing search result for "${query}": ${err}`);
+                console.log(`[SEARCH] Failed to parse: ${query}`);
                 resolve(null);
             }
         });
@@ -80,7 +71,7 @@ function ytSearch(query, mode) {
 
 // ===== AUTOPLAY RECOMMENDATION =====
 async function getAutoplaySongs(videoId, limit = 12) {
-    log(`Fetching autoplay recommendations for videoId: ${videoId}`);
+    console.log(`[AUTOPLAY] Fetching autoplay for video: ${videoId}`);
     const p = spawn(YT_DLP_COMMAND, [
         '--dump-json',
         '--flat-playlist',
@@ -92,22 +83,19 @@ async function getAutoplaySongs(videoId, limit = 12) {
     let data = '';
     p.stdout.on('data', c => data += c);
 
-    return new Promise((resolve) => {
+    return new Promise(resolve => {
         p.on('close', async () => {
             try {
                 const lines = data.trim().split('\n');
                 const songs = [];
-
                 for (let i = 1; i < lines.length; i++) {
                     const r = JSON.parse(lines[i]);
                     const info = await getSongInfo(`https://music.youtube.com/watch?v=${r.id}`);
                     if (info) songs.push(info);
                 }
-
-                log(`Fetched ${songs.length} autoplay songs`);
+                console.log(`[AUTOPLAY] Fetched ${songs.length} songs`);
                 resolve(songs);
-            } catch (err) {
-                log(`Error fetching autoplay songs: ${err}`);
+            } catch {
                 resolve([]);
             }
         });
@@ -119,15 +107,12 @@ async function playSong(guildId, song) {
     const serverQueue = queue.get(guildId);
     if (!serverQueue) return;
 
+    // ===== AUTOPLAY =====
     if (!song) {
         if (!serverQueue.lastPlayed) return;
 
-        log(`Autoplay triggered for guild ${guildId}`);
         const related = await getAutoplaySongs(serverQueue.lastPlayed.id, 15);
-        if (!related.length) {
-            log(`No autoplay songs found for "${serverQueue.lastPlayed.title}"`);
-            return;
-        }
+        if (!related.length) return;
 
         let fresh = related.filter(s => !serverQueue.history.has(s.id));
         if (!fresh.length) {
@@ -136,7 +121,7 @@ async function playSong(guildId, song) {
         }
 
         const pick = fresh.sort(() => Math.random() - 0.5).slice(0, 3);
-        log(`Adding ${pick.length} autoplay songs to queue`);
+
         for (const s of pick) {
             serverQueue.songs.push({
                 ...s,
@@ -148,12 +133,14 @@ async function playSong(guildId, song) {
         return playSong(guildId, serverQueue.songs[0]);
     }
 
+    // ===== CLEANUP STREAM =====
     if (serverQueue.streamProcess) {
         try { serverQueue.streamProcess.kill('SIGKILL'); } catch { }
         serverQueue.streamProcess = null;
     }
 
-    log(`Playing song "${song.title}" in guild ${guildId}`);
+    // ===== STREAM =====
+    console.log(`[PLAY] Playing: ${song.title}`);
     const child = spawn(YT_DLP_COMMAND, [
         song.webpage_url,
         '-o', '-',
@@ -169,6 +156,7 @@ async function playSong(guildId, song) {
     serverQueue.history.add(song.id);
     if (serverQueue.history.size > 100) serverQueue.history.clear();
 
+    // ===== EMBED =====
     const embed = new EmbedBuilder()
         .setColor(song.isAutoplay ? 0x9b59b6 : 0x1db954)
         .setAuthor({
@@ -197,7 +185,7 @@ async function playSong(guildId, song) {
 
 // ===== READY =====
 client.once(Events.ClientReady, () => {
-    log(`Logged in as ${client.user.tag}`);
+    console.log(`✅ Logged in as ${client.user.tag}`);
     client.user.setPresence({
         activities: [{ name: '.play | .help', type: ActivityType.Listening }],
         status: 'online'
@@ -212,18 +200,20 @@ client.on(Events.MessageCreate, async message => {
     const cmd = args.shift().toLowerCase();
     const guildId = message.guild.id;
 
+    let serverQueue = queue.get(guildId);
+
     if (cmd === 'play') {
-        if (!args.length) return message.reply('❌ Masukkan judul lagu');
-        if (!message.member.voice.channel) return message.reply('❌ Masuk voice dulu');
+        if (!args.length) return message.reply('❌ Please provide a song name.');
+        if (!message.member.voice.channel) return message.reply('❌ You must join a voice channel first.');
+
+        message.reply('🔍 Searching for your song...');
 
         const info = await getSongInfo(args.join(' '));
-        if (!info) return message.reply('❌ Lagu tidak ditemukan');
+        if (!info) return message.reply('❌ Song not found.');
 
         const song = { ...info, requester: message.author, isAutoplay: false };
-        let serverQueue = queue.get(guildId);
 
         if (!serverQueue) {
-            log(`Creating new queue for guild ${guildId}`);
             const player = createAudioPlayer();
             serverQueue = {
                 textChannel: message.channel,
@@ -247,7 +237,6 @@ client.on(Events.MessageCreate, async message => {
             connection.subscribe(player);
 
             player.on(AudioPlayerStatus.Idle, () => {
-                log(`Song ended in guild ${guildId}`);
                 serverQueue.songs.shift();
                 playSong(guildId, serverQueue.songs[0]);
             });
@@ -255,25 +244,60 @@ client.on(Events.MessageCreate, async message => {
             playSong(guildId, serverQueue.songs[0]);
         } else {
             serverQueue.songs.push(song);
-            log(`Added "${song.title}" to queue in guild ${guildId}`);
-            message.reply(`✅ Ditambahkan ke queue: **${song.title}**`);
+            message.reply(`✅ Added to queue: **${song.title}**`);
         }
     }
 
     if (cmd === 'skip') {
-        const serverQueue = queue.get(guildId);
         if (serverQueue) {
-            log(`Song skipped in guild ${guildId}`);
             serverQueue.player.stop();
+            message.reply('⏭ Skipped the current song.');
         }
     }
 
     if (cmd === 'stop') {
-        const serverQueue = queue.get(guildId);
-        if (!serverQueue) return;
-        log(`Stopping music and clearing queue in guild ${guildId}`);
-        serverQueue.songs = [];
-        serverQueue.player.stop();
+        if (serverQueue) {
+            serverQueue.songs = [];
+            serverQueue.player.stop();
+            message.reply('⏹ Music stopped and queue cleared.');
+        }
+    }
+
+    if (cmd === 'pause') {
+        if (serverQueue && serverQueue.player.state.status === 'playing') {
+            serverQueue.player.pause();
+            message.reply('⏸ Music paused.');
+        }
+    }
+
+    if (cmd === 'resume') {
+        if (serverQueue && serverQueue.player.state.status === 'paused') {
+            serverQueue.player.unpause();
+            message.reply('▶ Music resumed.');
+        }
+    }
+
+    if (cmd === 'help') {
+        message.channel.send({
+            embeds: [
+                new EmbedBuilder()
+                    .setColor(0x1db954)
+                    .setTitle('🎵 Music Bot Commands')
+                    .setDescription('Here are the commands you can use:')
+                    .addFields(
+                        { name: '.play <song name>', value: 'Play a song or add to the queue', inline: false },
+                        { name: '.skip', value: 'Skip the current song', inline: false },
+                        { name: '.stop', value: 'Stop the music and clear the queue', inline: false },
+                        { name: '.pause', value: 'Pause the current song', inline: false },
+                        { name: '.resume', value: 'Resume the paused song', inline: false },
+                        { name: '.help', value: 'Show this help message', inline: false }
+                    )
+                    .setFooter({
+                        text: 'Powered by San\'sMusic', iconURL: client.user.displayAvatarURL()
+                    })
+                    .setTimestamp()
+            ]
+        });
     }
 });
 
