@@ -1,0 +1,15 @@
+services:
+  discord-bot:
+    container_name: sans-music-bot
+    build: .
+    restart: unless-stopped  # Bot akan auto-restart jika crash atau server reboot
+    env_file:
+      - .env  # Mengambil token dari file .env kamu
+    volumes:
+      # Mapping file log agar bisa dibaca dari luar container
+      - ./bot_activity.log:/usr/src/app/bot_activity.log
+    # Batasan resource (opsional, agar bot tidak memakan semua RAM VPS)
+    deploy:
+      resources:
+        limits:
+          memory: 512M
