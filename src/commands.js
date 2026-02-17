@@ -7,6 +7,7 @@ const {
 } = require('discord.js');
 
 const { AudioPlayerStatus } = require('@discordjs/voice'); // <- PENTING
+const { getVoiceConnection } = require('@discordjs/voice');
 
 const client = require('./client');
 const { PREFIX } = require('./config');
@@ -197,6 +198,18 @@ client.on(Events.MessageCreate, async message => {
         });
     }
 
+    // Leave command is handled in events.js to auto-leave when no users are left in the voice channel
+    if (cmd === "leave") {
+
+        const connection = getVoiceConnection(message.guild.id);
+
+        if (!connection) {
+            return message.reply("❌ I'm not connected to any voice channel.");
+        }
+
+        connection.destroy();
+        message.reply("👋 Left the voice channel.");
+    }
     // =========================
     // HELP COMMAND
     // =========================
