@@ -10,7 +10,7 @@ async function playSong(guildId, song) {
     const serverQueue = queue.get(guildId);
     if (!serverQueue) return;
 
-    if (!song) {
+    if (!song || serverQueue.lastPlayed) {
         if (!serverQueue.lastPlayed) return;
         const related = await getAutoplaySongs(serverQueue.lastPlayed.id, 15);
         if (!related.length) return;
