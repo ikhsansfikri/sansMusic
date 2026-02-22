@@ -33,12 +33,11 @@ client.on(Events.MessageCreate, async message => {
         if (!args.length) return message.reply('❌ Please provide a song name.');
         if (!message.member.voice.channel) return message.reply('❌ You must join a voice channel first.');
 
-        message.reply('🔍 Searching...');
         const info = await getSongInfo(args.join(' '));
         if (!info) return message.reply('❌ Song not found.');
 
         const song = { ...info, requester: message.author, isAutoplay: false };
-
+        console.log('Queue Before add' + serverQueue)
         if (!serverQueue) {
             const { createAudioPlayer, joinVoiceChannel } = require('@discordjs/voice');
             const player = createAudioPlayer();
@@ -70,7 +69,15 @@ client.on(Events.MessageCreate, async message => {
 
             playSong(guildId, serverQueue.songs[0]);
         } else {
+            // Delete playlist autogenerate
+            serverQueue.songs = serverQueue.songs.filter((song, index) => {
+                // keep playing song
+                if (index === 0) return true;
+                return song.isAutoplay == false;
+            });
+            // Push new song to playlist
             serverQueue.songs.push(song);
+            console.log('Queue : ' + serverQueue.songs)
             message.reply(`✅ Added to queue: **${song.title}**`);
         }
     }
@@ -80,8 +87,9 @@ client.on(Events.MessageCreate, async message => {
     // =========================
     if (cmd === 'skip' || cmd === 's') {
         if (serverQueue) {
-            serverQueue.player.stop();
             message.reply('⏭ Skipped the current song.');
+            serverQueue.songs.shift();
+            playSong(guildId, serverQueue.songs[0]);
         } else {
             message.reply('❌ Nothing is playing.');
         }
@@ -208,7 +216,6 @@ client.on(Events.MessageCreate, async message => {
         }
 
         connection.destroy();
-        message.reply("👋 Left the voice channel.");
     }
     // =========================
     // HELP COMMAND
@@ -227,7 +234,7 @@ client.on(Events.MessageCreate, async message => {
                 { name: "-queue | -list | -l", value: 'Show the current music queue', inline: false },
                 { name: "-help | -h", value: 'Show this help message', inline: false }
             )
-            .setFooter({ text: 'Powered by San\'sMusic', iconURL: client.user.displayAvatarURL() })
+            .setFooter({ text: 'Powered by San\'s Music', iconURL: client.user.displayAvatarURL() })
             .setTimestamp();
 
         message.channel.send({ embeds: [embed] });
