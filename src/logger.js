@@ -1,4 +1,15 @@
+const fs = require('fs');
+const path = require('path');
 const { createLogger, format, transports } = require('winston');
+const { LOG_DIR } = require('./config'); // ambil dari config
+
+// buat path absolut
+const logDir = path.isAbsolute(LOG_DIR) ? LOG_DIR : path.join(__dirname, LOG_DIR);
+
+// buat folder jika belum ada
+if (!fs.existsSync(logDir)) {
+    fs.mkdirSync(logDir, { recursive: true });
+}
 
 const logger = createLogger({
     level: 'info',
@@ -8,9 +19,11 @@ const logger = createLogger({
     ),
     transports: [
         new transports.Console(),
-        new transports.File({ filename: 'storage/logs/bot.log', level: 'info' }),
-        new transports.File({ filename: 'storage/logs/error.log', level: 'error' })
+        new transports.File({ filename: path.join(logDir, 'bot.log'), level: 'info' }),
+        new transports.File({ filename: path.join(logDir, 'error.log'), level: 'error' })
     ]
 });
+
+logger.info(`Logger initialized ✅, logs directory: ${logDir}`);
 
 module.exports = logger;
