@@ -18,7 +18,8 @@ const { formatTime, createProgressBar } = require('./utils/time');
 const CHANGELOG = [
     {
         title: 'Auto-pause customization',
-        body: 'Playback auto-pauses after a configurable duration (default 40m). Use -autopause <minutes|reset> to adjust. Resume/Stop buttons appear after timeout.'
+        body: 'Playback auto-pauses after a configurable duration (default 40m). Use -autopause <minutes|reset> to adjust. Resume/Stop buttons appear after timeout.',
+        date: '2026-03-02'
     }
 ];
 
@@ -257,7 +258,7 @@ client.on(Events.MessageCreate, async message => {
         const embed = new EmbedBuilder()
             .setColor(0x5865f2)
             .setTitle('📜 Changelog')
-            .addFields(CHANGELOG.map(entry => ({ name: entry.title, value: entry.body })))
+            .addFields(CHANGELOG.map(entry => ({ name: `${entry.title} — ${entry.date || 'TBD'}`, value: entry.body })))
             .setTimestamp();
 
         return message.channel.send({ embeds: [embed] });
