@@ -25,7 +25,12 @@ const CHANGELOG = [
         title: 'Auto-pause skip fix',
         body: 'Auto-pause now keeps counting play time across song skips so it still triggers after the configured duration.',
         date: '2026-03-02'
-    }
+    },
+    {
+        title: 'Add new command: -ps & -st',
+        body: 'Added -ps as an alias for pause and -st as an alias for stop for quicker access.',
+        date: '2026-03-02'
+    },
 ];
 
 // =========================
@@ -116,7 +121,7 @@ client.on(Events.MessageCreate, async message => {
     // =========================
     // STOP COMMAND
     // =========================
-    if (cmd === 'stop') {
+    if (cmd === 'stop' || cmd === 'st') {
         if (serverQueue) {
             serverQueue.songs = [];
             serverQueue.player.stop();
@@ -131,7 +136,7 @@ client.on(Events.MessageCreate, async message => {
     // =========================
     // PAUSE COMMAND
     // =========================
-    if (cmd === 'pause') {
+    if (cmd === 'pause' || cmd === 'ps') {
         if (serverQueue && serverQueue.player.state.status === 'playing') {
             serverQueue.player.pause();
             message.reply('⏸ Music paused.');
