@@ -55,11 +55,15 @@ function ytSearch(query, mode) {
 }
 
 async function getSongInfo(query) {
-    console.log(`[SEARCH] Searching for: ${query}`);
     logger.info(`[SEARCH] Searching for: ${query}`);
-    let result = await ytSearch(query, 'ytsearchmusic');
-    if (result) return result;
-    return await ytSearch(query, 'ytsearch');
+    const modes = ['ytsearchmusic', 'ytsearch'];
+
+    for (const mode of modes) {
+        const result = await ytSearch(query, mode);
+        if (result) return result;
+    }
+    logger.warn(`[SEARCH] No results found for: ${query}`);
+    return null;
 }
 
 module.exports = { getSongInfo, ytSearch };
