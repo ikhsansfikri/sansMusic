@@ -5,7 +5,7 @@ const client = require('./client');
 const logger = require('./logger');
 
 const queue = new Map();
-const AUTO_PAUSE_LIMIT_MS = 40 * 60 * 1000;
+const DEFAULT_AUTO_PAUSE_LIMIT_MS = 40 * 60 * 1000;
 
 function stopAutoPauseMonitor(serverQueue) {
     if (serverQueue?.autoPauseTimer) {
@@ -20,6 +20,7 @@ function startAutoPauseMonitor(guildId) {
 
     stopAutoPauseMonitor(serverQueue);
     serverQueue.autoPauseLastTick = Date.now();
+    const limitMs = serverQueue.autoPauseLimitMs || DEFAULT_AUTO_PAUSE_LIMIT_MS;
     serverQueue.autoPauseTimer = setInterval(() => {
         const sq = queue.get(guildId);
         if (!sq) return stopAutoPauseMonitor(serverQueue);
@@ -31,7 +32,7 @@ function startAutoPauseMonitor(guildId) {
         if (sq.player?.state?.status === AudioPlayerStatus.Playing && !sq.autoPausePending) {
             if (typeof sq.autoPausePlayedMs !== 'number') sq.autoPausePlayedMs = 0;
             sq.autoPausePlayedMs += delta;
-            if (sq.autoPausePlayedMs >= AUTO_PAUSE_LIMIT_MS) triggerAutoPause(guildId);
+            if (sq.autoPausePlayedMs >= limitMs) triggerAutoPause(guildId);
         }
     }, 30_000);
 }
@@ -43,6 +44,8 @@ async function triggerAutoPause(guildId) {
     serverQueue.autoPausePending = true;
     try { serverQueue.player.pause(); } catch { }
 
+    const limitMinutes = Math.round((serverQueue.autoPauseLimitMs || DEFAULT_AUTO_PAUSE_LIMIT_MS) / 60000);
+
     const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId('autoPauseResume').setLabel('Resume').setStyle(ButtonStyle.Success),
         new ButtonBuilder().setCustomId('autoPauseStop').setLabel('Stop').setStyle(ButtonStyle.Danger)
@@ -51,7 +54,7 @@ async function triggerAutoPause(guildId) {
     const embed = new EmbedBuilder()
         .setColor(0xf1c40f)
         .setTitle('Playback paused')
-        .setDescription('Music paused after 40 minutes. Confirm to continue or stop playback.')
+        .setDescription(`Music paused after ${limitMinutes} minutes. Confirm to continue or stop playback.`)
         .setFooter({ text: serverQueue.textChannel.guild.name, iconURL: serverQueue.textChannel.guild.iconURL() })
         .setTimestamp();
 
@@ -92,6 +95,8 @@ async function triggerAutoPause(guildId) {
 async function playSong(guildId, song) {
     const serverQueue = queue.get(guildId);
     if (!serverQueue) return;
+
+    if (!serverQueue.autoPauseLimitMs) serverQueue.autoPauseLimitMs = DEFAULT_AUTO_PAUSE_LIMIT_MS;
 
     if (!song || (serverQueue.lastPlayed && !serverQueue.songs)) {
         if (!serverQueue.lastPlayed) return;
@@ -153,8 +158,24 @@ async function playSong(guildId, song) {
     serverQueue.textChannel.send({ embeds: [embed] });
 
     serverQueue.autoPausePending = false;
+    serverQueue.autoPausePlayedMs = 0;
     serverQueue.autoPauseLastTick = Date.now();
     startAutoPauseMonitor(guildId);
 }
 
-module.exports = { queue, playSong, stopAutoPauseMonitor };
+function restartAutoPauseMonitor(guildId) {
+    const serverQueue = queue.get(guildId);
+    if (!serverQueue) return;
+    serverQueue.autoPausePending = false;
+    serverQueue.autoPausePlayedMs = 0;
+    serverQueue.autoPauseLastTick = Date.now();
+    startAutoPauseMonitor(guildId);
+}
+
+module.exports = {
+    queue,
+    playSong,
+    stopAutoPauseMonitor,
+    restartAutoPauseMonitor,
+    DEFAULT_AUTO_PAUSE_LIMIT_MS
+};

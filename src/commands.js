@@ -11,9 +11,16 @@ const { getVoiceConnection } = require('@discordjs/voice');
 
 const client = require('./client');
 const { PREFIX } = require('./config');
-const { queue, playSong, stopAutoPauseMonitor } = require('./player');
+const { queue, playSong, stopAutoPauseMonitor, restartAutoPauseMonitor, DEFAULT_AUTO_PAUSE_LIMIT_MS } = require('./player');
 const { getSongInfo } = require('./utils/search');
 const { formatTime, createProgressBar } = require('./utils/time');
+
+const CHANGELOG = [
+    {
+        title: 'Auto-pause customization',
+        body: 'Playback auto-pauses after a configurable duration (default 40m). Use -autopause <minutes|reset> to adjust. Resume/Stop buttons appear after timeout.'
+    }
+];
 
 // =========================
 // MESSAGE CREATE EVENT
@@ -60,7 +67,8 @@ client.on(Events.MessageCreate, async message => {
                 autoPauseTimer: null,
                 autoPausePlayedMs: 0,
                 autoPausePending: false,
-                autoPauseLastTick: null
+                autoPauseLastTick: null,
+                autoPauseLimitMs: DEFAULT_AUTO_PAUSE_LIMIT_MS
             };
             queue.set(guildId, serverQueue);
             serverQueue.songs.push(song);
@@ -142,6 +150,32 @@ client.on(Events.MessageCreate, async message => {
     }
 
     // =========================
+    // AUTOPAUSE COMMAND
+    // =========================
+    if (cmd === 'autopause') {
+        if (!serverQueue) return message.reply('❌ Nothing is playing. Start playback before configuring auto-pause.');
+
+        const raw = args[0];
+        if (!raw) return message.reply('⏱ Usage: -autopause <minutes|reset>');
+
+        if (raw.toLowerCase() === 'reset') {
+            serverQueue.autoPauseLimitMs = DEFAULT_AUTO_PAUSE_LIMIT_MS;
+            restartAutoPauseMonitor(guildId);
+            return message.reply(`⏱ Auto-pause reset to ${Math.round(DEFAULT_AUTO_PAUSE_LIMIT_MS / 60000)} minutes.`);
+        }
+
+        const minutes = Number(raw);
+        if (!Number.isFinite(minutes) || minutes <= 0) {
+            return message.reply('❌ Please provide a positive number of minutes or use "reset".');
+        }
+
+        const clamped = Math.min(Math.max(Math.round(minutes), 1), 240);
+        serverQueue.autoPauseLimitMs = clamped * 60 * 1000;
+        restartAutoPauseMonitor(guildId);
+        return message.reply(`⏱ Auto-pause set to ${clamped} minute(s) for this server.`);
+    }
+
+    // =========================
     // QUEUE COMMAND
     // =========================
     if (cmd === 'queue' || cmd === 'list' || cmd === 'l') {
@@ -214,6 +248,21 @@ client.on(Events.MessageCreate, async message => {
         });
     }
 
+    // =========================
+    // CHANGELOG COMMAND
+    // =========================
+    if (cmd === 'changelog' || cmd === 'changes' || cmd === 'cl') {
+        if (!CHANGELOG.length) return message.reply('ℹ No changelog entries yet.');
+
+        const embed = new EmbedBuilder()
+            .setColor(0x5865f2)
+            .setTitle('📜 Changelog')
+            .addFields(CHANGELOG.map(entry => ({ name: entry.title, value: entry.body })))
+            .setTimestamp();
+
+        return message.channel.send({ embeds: [embed] });
+    }
+
     // Leave command is handled in events.js to auto-leave when no users are left in the voice channel
     if (cmd === "leave") {
 
@@ -239,6 +288,8 @@ client.on(Events.MessageCreate, async message => {
                 { name: "-stop", value: 'Stop the music and clear the queue', inline: false },
                 { name: "-pause", value: 'Pause the current song', inline: false },
                 { name: "-resume | -r", value: 'Resume the paused song', inline: false },
+                { name: "-autopause <minutes|reset>", value: 'Set or reset the auto-pause timer', inline: false },
+                { name: "-changelog | -changes | -cl", value: 'Show recent updates to the bot', inline: false },
                 { name: "-queue | -list | -l", value: 'Show the current music queue', inline: false },
                 { name: "-help | -h", value: 'Show this help message', inline: false }
             )
