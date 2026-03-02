@@ -158,7 +158,6 @@ async function playSong(guildId, song) {
     serverQueue.textChannel.send({ embeds: [embed] });
 
     serverQueue.autoPausePending = false;
-    serverQueue.autoPausePlayedMs = 0;
     serverQueue.autoPauseLastTick = Date.now();
     startAutoPauseMonitor(guildId);
 }

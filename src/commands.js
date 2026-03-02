@@ -20,6 +20,11 @@ const CHANGELOG = [
         title: 'Auto-pause customization',
         body: 'Playback auto-pauses after a configurable duration (default 40m). Use -autopause <minutes|reset> to adjust. Resume/Stop buttons appear after timeout.',
         date: '2026-03-02'
+    },
+    {
+        title: 'Auto-pause skip fix',
+        body: 'Auto-pause now keeps counting play time across song skips so it still triggers after the configured duration.',
+        date: '2026-03-02'
     }
 ];
 
