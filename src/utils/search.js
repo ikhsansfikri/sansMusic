@@ -5,7 +5,7 @@ const logger = require('../logger');
 function ytSearch(query, mode) {
     return new Promise(resolve => {
         const p = spawn(YT_DLP_COMMAND, [
-            '--dump-json',
+            '--dump-single-json',
             '--default-search', mode,
             '--no-playlist',
             '--no-warnings',
@@ -17,10 +17,26 @@ function ytSearch(query, mode) {
 
         p.on('close', () => {
             try {
+                if (!data || !data.trim()) {
+                    return resolve(null);
+                }
+
                 const info = JSON.parse(data);
-                const r = info.entries ? info.entries[0] : info;
+
+                if (!info) return resolve(null);
+
+                let r = null;
+
+                if (info.entries && Array.isArray(info.entries)) {
+                    r = info.entries.find(e => e);
+                } else {
+                    r = info;
+                }
+
+                if (!r) return resolve(null);
+
                 console.log(`[SEARCH] Found: ${r.title}`);
-                logger.info(`[SEARCH] Found: ${r.title}`);
+
                 resolve({
                     title: r.title,
                     id: r.id,
@@ -31,8 +47,7 @@ function ytSearch(query, mode) {
                     duration_seconds: r.duration || null,
                 });
             } catch (err) {
-                console.log(`[SEARCH] Failed to parse: ${query}`);
-                logger.error(`[SEARCH] Failed to parse: ${query} - ${err.message}`);
+                logger.error(`[SEARCH] Failed to parse: ${query} - ${err.message} - Output: ${data}`);
                 resolve(null);
             }
         });
