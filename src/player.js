@@ -1,10 +1,93 @@
 const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus } = require('@discordjs/voice');
-const { EmbedBuilder } = require('discord.js');
+const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const { getAutoplaySongs } = require('./utils/autoplay');
 const client = require('./client');
 const logger = require('./logger');
 
 const queue = new Map();
+const AUTO_PAUSE_LIMIT_MS = 40 * 60 * 1000;
+
+function stopAutoPauseMonitor(serverQueue) {
+    if (serverQueue?.autoPauseTimer) {
+        clearInterval(serverQueue.autoPauseTimer);
+        serverQueue.autoPauseTimer = null;
+    }
+}
+
+function startAutoPauseMonitor(guildId) {
+    const serverQueue = queue.get(guildId);
+    if (!serverQueue) return;
+
+    stopAutoPauseMonitor(serverQueue);
+    serverQueue.autoPauseLastTick = Date.now();
+    serverQueue.autoPauseTimer = setInterval(() => {
+        const sq = queue.get(guildId);
+        if (!sq) return stopAutoPauseMonitor(serverQueue);
+
+        const now = Date.now();
+        const delta = Math.max(0, now - (sq.autoPauseLastTick || now));
+        sq.autoPauseLastTick = now;
+
+        if (sq.player?.state?.status === AudioPlayerStatus.Playing && !sq.autoPausePending) {
+            if (typeof sq.autoPausePlayedMs !== 'number') sq.autoPausePlayedMs = 0;
+            sq.autoPausePlayedMs += delta;
+            if (sq.autoPausePlayedMs >= AUTO_PAUSE_LIMIT_MS) triggerAutoPause(guildId);
+        }
+    }, 30_000);
+}
+
+async function triggerAutoPause(guildId) {
+    const serverQueue = queue.get(guildId);
+    if (!serverQueue || serverQueue.autoPausePending) return;
+
+    serverQueue.autoPausePending = true;
+    try { serverQueue.player.pause(); } catch { }
+
+    const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('autoPauseResume').setLabel('Resume').setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId('autoPauseStop').setLabel('Stop').setStyle(ButtonStyle.Danger)
+    );
+
+    const embed = new EmbedBuilder()
+        .setColor(0xf1c40f)
+        .setTitle('Playback paused')
+        .setDescription('Music paused after 40 minutes. Confirm to continue or stop playback.')
+        .setFooter({ text: serverQueue.textChannel.guild.name, iconURL: serverQueue.textChannel.guild.iconURL() })
+        .setTimestamp();
+
+    const prompt = await serverQueue.textChannel.send({ embeds: [embed], components: [row] });
+    const collector = prompt.createMessageComponentCollector({ time: 120_000 });
+
+    collector.on('collect', async interaction => {
+        if (interaction.user.bot) return;
+        if (!interaction.member.voice.channel || interaction.member.voice.channel.id !== serverQueue.voiceChannel.id) {
+            return interaction.reply({ content: '❌ Join the voice channel to control playback.', ephemeral: true });
+        }
+
+        if (interaction.customId === 'autoPauseResume') {
+            serverQueue.autoPausePending = false;
+            serverQueue.autoPausePlayedMs = 0;
+            serverQueue.autoPauseLastTick = Date.now();
+            try { serverQueue.player.unpause(); } catch { }
+            startAutoPauseMonitor(guildId);
+            return interaction.update({ content: '▶ Resuming playback.', embeds: [], components: [] });
+        }
+
+        if (interaction.customId === 'autoPauseStop') {
+            serverQueue.songs = [];
+            serverQueue.player.stop();
+            stopAutoPauseMonitor(serverQueue);
+            queue.delete(guildId);
+            try { serverQueue.connection.destroy(); } catch { }
+            return interaction.update({ content: '⏹ Playback stopped.', embeds: [], components: [] });
+        }
+    });
+
+    collector.on('end', () => {
+        if (!prompt.editable) return;
+        prompt.edit({ components: [] }).catch(() => { });
+    });
+}
 
 async function playSong(guildId, song) {
     const serverQueue = queue.get(guildId);
@@ -68,6 +151,10 @@ async function playSong(guildId, song) {
     serverQueue.songStartTime = Date.now();
     serverQueue.currentDurationSec = song.duration_seconds || null;
     serverQueue.textChannel.send({ embeds: [embed] });
+
+    serverQueue.autoPausePending = false;
+    serverQueue.autoPauseLastTick = Date.now();
+    startAutoPauseMonitor(guildId);
 }
 
-module.exports = { queue, playSong };
+module.exports = { queue, playSong, stopAutoPauseMonitor };

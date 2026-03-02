@@ -1,5 +1,5 @@
 const { Events } = require('discord.js');
-const { queue } = require('./player');
+const { queue, stopAutoPauseMonitor } = require('./player');
 const client = require('./client');
 const logger = require('./logger');
 
@@ -16,6 +16,7 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
             serverQueue.player.stop();
             serverQueue.songs = [];
             serverQueue.history.clear();
+            stopAutoPauseMonitor(serverQueue);
             try { serverQueue.connection.destroy(); } catch { }
             queue.delete(guildId);
         }

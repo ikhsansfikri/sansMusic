@@ -11,7 +11,7 @@ const { getVoiceConnection } = require('@discordjs/voice');
 
 const client = require('./client');
 const { PREFIX } = require('./config');
-const { queue, playSong } = require('./player');
+const { queue, playSong, stopAutoPauseMonitor } = require('./player');
 const { getSongInfo } = require('./utils/search');
 const { formatTime, createProgressBar } = require('./utils/time');
 
@@ -56,7 +56,11 @@ client.on(Events.MessageCreate, async message => {
                 songs: [],
                 lastPlayed: null,
                 streamProcess: null,
-                history: new Set()
+                history: new Set(),
+                autoPauseTimer: null,
+                autoPausePlayedMs: 0,
+                autoPausePending: false,
+                autoPauseLastTick: null
             };
             queue.set(guildId, serverQueue);
             serverQueue.songs.push(song);
@@ -102,6 +106,7 @@ client.on(Events.MessageCreate, async message => {
         if (serverQueue) {
             serverQueue.songs = [];
             serverQueue.player.stop();
+            queue.forEach(sq => stopAutoPauseMonitor(sq));
             queue.clear();
             message.reply('⏹ Music stopped and queue cleared.');
         } else {
@@ -127,6 +132,9 @@ client.on(Events.MessageCreate, async message => {
     if (cmd === 'resume' || cmd === 'r') {
         if (serverQueue && serverQueue.player.state.status === 'paused') {
             serverQueue.player.unpause();
+            serverQueue.autoPausePending = false;
+            serverQueue.autoPausePlayedMs = 0;
+            serverQueue.autoPauseLastTick = Date.now();
             message.reply('▶ Music resumed.');
         } else {
             message.reply('❌ Nothing is paused.');
